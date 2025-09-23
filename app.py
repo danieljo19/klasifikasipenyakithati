@@ -18,6 +18,7 @@ from sklearn.metrics import (
     accuracy_score, precision_recall_fscore_support,
     roc_auc_score, confusion_matrix, classification_report
 )
+import plotly.graph_objects as go
 
 # -------------------- Konfigurasi Halaman --------------------
 st.set_page_config(
@@ -117,6 +118,49 @@ def load_any(uploaded_or_path):
             return pd.read_excel(uploaded_or_path)
         else:
             raise ValueError("Gunakan format .csv atau .xlsx")
+        
+def risk_level(prob):
+    if prob < 0.33: return "Low", "#16a34a"
+    if prob < 0.66: return "Moderate", "#f59e0b"
+    return "High", "#dc2626"
+
+def list_anomalies(one_row: pd.Series, ranges: dict):
+    notes = []
+    for k,(lo,hi,unit) in ranges.items():
+        v = float(one_row[k])
+        if v < lo:
+            notes.append(f"⬇️ **{k}** {v} {unit} (min {lo})")
+        elif v > hi:
+            notes.append(f"⬆️ **{k}** {v} {unit} (max {hi})")
+    return notes
+
+def tornado_sensitivity(pipeline, base_df: pd.DataFrame, num_cols, rel=0.2):
+    """One-way sensitivity ±rel (default 20%) untuk prob kelas positif."""
+    try:
+        base_prob = float(pipeline.predict_proba(base_df)[:,1][0])
+    except Exception:
+        # fallback pakai decision_function → sigmoid
+        dv = float(pipeline.decision_function(base_df)[0])
+        base_prob = 1/(1+np.exp(-dv))
+
+    rows = []
+    for col in num_cols:
+        v = float(base_df[col].iloc[0])
+        v_minus = max(0.0, v*(1-rel))
+        v_plus  = max(0.0, v*(1+rel))
+
+        df_minus = base_df.copy(); df_minus.loc[:, col] = v_minus
+        df_plus  = base_df.copy(); df_plus.loc[:, col]  = v_plus
+
+        p_minus = float(pipeline.predict_proba(df_minus)[:,1][0])
+        p_plus  = float(pipeline.predict_proba(df_plus)[:,1][0])
+
+        delta = p_plus - p_minus  # rentang pengaruh
+        rows.append((col, delta, p_minus, p_plus))
+
+    # urutkan berdasarkan |delta|, ambil Top-5
+    rows.sort(key=lambda x: abs(x[1]), reverse=True)
+    return rows[:5], base_prob
 
 def b64_download(df: pd.DataFrame, filename="predictions.csv"):
     data = df.to_csv(index=False).encode()
@@ -338,23 +382,69 @@ elif menu == "Uji via Form (Realtime)":
 
     if st.button("🔮 Prediksi"):
         try:
+            # --- Probabilitas dasar ---
             pred = int(pipeline.predict(one)[0])
             try:
                 ppos = float(pipeline.predict_proba(one)[:,1][0])
             except Exception:
-                try:
-                    dv = float(pipeline.decision_function(one)[0])
-                    ppos = 1/(1+np.exp(-dv))
-                except Exception:
-                    ppos = None
+                dv = float(pipeline.decision_function(one)[0]); ppos = 1/(1+np.exp(-dv))
 
-            badge = "🟢 Positive (1)" if pred==1 else "🔴 Negative (0)"
-            st.success(f"Hasil Prediksi: **{badge}**")
-            if ppos is not None:
-                fig, ax = plt.subplots(figsize=(3.6,3.6))
-                vals = [ppos, 1-ppos]
-                wedges,_ = ax.pie(vals, startangle=90, wedgeprops=dict(width=0.35))
-                ax.set(aspect="equal", title=f"Probabilitas Kelas Positif\n{ppos:.2%}")
+            # --- Threshold slider (ubah ambang keputusan) ---
+            st.markdown("**Decision threshold**")
+            thr = st.slider("Ambang positif", 0.05, 0.95, 0.50, 0.01)
+            pred_thr = 1 if ppos >= thr else 0
+
+            # --- Badge + ringkasan risiko ---
+            level, color = risk_level(ppos)
+            st.markdown(
+                f"""
+                <div style="display:flex;gap:12px;align-items:center;margin:.4rem 0;">
+                <div style="background:{color};color:white;padding:.35rem .6rem;border-radius:999px;font-weight:700;">
+                    {level} risk
+                </div>
+                <div style="opacity:.8">Probabilitas positif: <b>{ppos:.1%}</b> • Threshold: <b>{thr:.2f}</b> → Prediksi: <b>{pred_thr}</b></div>
+                </div>
+                """, unsafe_allow_html=True
+            )
+
+            # --- Risk gauge (Plotly) ---
+            fig_g = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=ppos*100,
+                number={'suffix': "%"},
+                title={'text': "Risk (Positive class)"},
+                gauge={
+                    'axis': {'range': [0,100]},
+                    'bar': {'color': color},
+                    'steps': [
+                        {'range': [0,33], 'color': '#E6F4EA'},
+                        {'range': [33,66], 'color': '#FEF3C7'},
+                        {'range': [66,100], 'color': '#FEE2E2'},
+                    ],
+                    'threshold': {'line': {'color': '#111', 'width': 3}, 'thickness': 0.8, 'value': thr*100},
+                }
+            ))
+            st.plotly_chart(fig_g, use_container_width=True, config={"displayModeBar": False})
+
+            # --- Anomali klinis (dibanding rentang normal) ---
+            notes = list_anomalies(one.iloc[0], ranges)
+            if notes:
+                st.markdown("**🧪 Nilai di luar rentang normal:**")
+                st.markdown("\n".join([f"- {n}" for n in notes]))
+            else:
+                st.markdown("**🧪 Semua nilai berada dalam rentang normal dewasa.**")
+
+            # --- Tornado chart: one-way sensitivity ±20% ---
+            top_rows, base_prob = tornado_sensitivity(pipeline, one, NUM_COLS, rel=0.2)
+            if top_rows:
+                st.markdown("**📈 Sensitivitas (±20%) — TOP 5 fitur paling berpengaruh**")
+                # visual pakai matplotlib (biar ringan)
+                labels = [r[0] for r in top_rows][::-1]
+                deltas = [r[1]*100 for r in top_rows][::-1]   # ke persen
+                fig, ax = plt.subplots(figsize=(6, 3.8))
+                ax.barh(labels, deltas)
+                ax.axvline(0, color="#999", linewidth=1)
+                ax.set_xlabel("Δ Probabilitas positif (p.p.) untuk +20% vs -20%")
                 st.pyplot(fig)
         except Exception as e:
             st.error(f"Gagal memprediksi: {e}")
