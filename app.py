@@ -128,6 +128,8 @@ def load_pipeline_from_bytes(pkl_bytes: bytes):
     return joblib.load(io.BytesIO(pkl_bytes))
 
 # -------------------- Sidebar (Model hanya teks nama) --------------------
+import sys, sklearn, numpy as np, scipy
+st.sidebar.caption(f"Py {sys.version.split()[0]} • sklearn {sklearn.__version__} • numpy {np.__version__} • scipy {scipy.__version__}")
 st.title("🩺 LPD • Pengujian SVM+PCA (RBF)")
 st.caption("Pipeline: preprocess → scaler → PCA → SVC (rbf)")
 
