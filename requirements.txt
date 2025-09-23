@@ -1,18 +1,16 @@
-# Streamlit app requirements for LPD • SVM+PCA (RBF)
-# If your model .pkl was trained on a different scikit-learn version,
-# change the scikit-learn pin below to match your training environment.
-
-# Core app
 streamlit==1.35.0
 
-# ML stack (align with training env when possible)
 scikit-learn==1.4.2
-numpy==1.26.4
-scipy==1.11.4
+
+numpy==1.26.4 
 pandas==2.2.2
 matplotlib==3.8.4
 joblib==1.3.2
 threadpoolctl==3.5.0
 
-# Excel I/O
+scipy==1.11.4 ; python_version < "3.12"
+scipy==1.12.0 ; python_version >= "3.12"
+
 openpyxl==3.1.2
+
+protobuf<5
