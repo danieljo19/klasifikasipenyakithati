@@ -169,47 +169,93 @@ def near_boundary(prob, window=0.05):
     return abs(prob - 0.5) <= window
 
 def render_gauge_html(prob: float):
+    """
+    Semicircle gauge yang lebih menarik:
+    - Zona warna (low/medium/high) dengan gradasi lembut
+    - Tick marks & label 0% • 50% • 100% + teks Low/Moderate/High
+    - Jarum animasi halus
+    - Nilai besar + emoji status
+    """
     pct = max(0.0, min(prob*100.0, 100.0))
-    angle = -90 + (pct * 1.8)
+    angle = -90 + (pct * 1.8)  # 0..100% -> -90..+90
+
+    # label & emoji
+    if prob < 0.33:
+        label = "Low";    emoji = "🟢"
+    elif prob < 0.66:
+        label = "Moderate"; emoji = "🟡"
+    else:
+        label = "High";   emoji = "🔴"
+
     html = f"""
-<div style="width:100%;display:flex;justify-content:center;">
-  <div style="position:relative;width:560px;height:280px;">
+<div style="width:100%;display:flex;justify-content:center;margin-top:.5rem;">
+  <div style="position:relative;width:620px;height:340px;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto;">
+    <!-- Arc background with gradient zones -->
     <div style="
       position:absolute;left:0;bottom:0;width:100%;height:100%;
-      border-top-left-radius:560px;border-top-right-radius:560px;
+      border-top-left-radius:620px;border-top-right-radius:620px;
       background:
         conic-gradient(from 180deg,
-          #E6F4EA 0deg 120deg,
-          #FEF3C7 120deg 240deg,
-          #FEE2E2 240deg 360deg
+          #DCFCE7 0deg 110deg,     /* green */
+          #FEF3C7 110deg 230deg,   /* yellow */
+          #FEE2E2 230deg 360deg    /* red */
         );
-      -webkit-mask: radial-gradient(circle at 50% 100%, transparent 190px, #000 191px);
-              mask: radial-gradient(circle at 50% 100%, transparent 190px, #000 191px);
+      -webkit-mask: radial-gradient(circle at 50% 100%, transparent 225px, #000 226px);
+              mask: radial-gradient(circle at 50% 100%, transparent 225px, #000 226px);
+      box-shadow: inset 0 12px 24px rgba(0,0,0,.18);
     "></div>
 
+    <!-- Tick marks -->
+    <div style="position:absolute;left:0;bottom:0;width:100%;height:100%;
+                -webkit-mask: radial-gradient(circle at 50% 100%, transparent 214px, #000 215px);
+                        mask: radial-gradient(circle at 50% 100%, transparent 214px, #000 215px);">
+      {"".join([
+        f'<div style="position:absolute;left:50%;bottom:0;transform-origin:50% 100%;' +
+        f'transform:translateX(-50%) rotate({-90 + i*18}deg);width:2px;height:34px;' +
+        'background:rgba(255,255,255,.65);border-radius:2px;opacity:.8;"></div>'
+        for i in range(0,11)
+      ])}
+    </div>
+
+    <!-- Needle -->
     <div style="
       position:absolute;left:50%;bottom:0;transform-origin:50% 100%;
       transform: translateX(-50%) rotate({angle}deg);
-      width:4px;height:185px;background:#e5e7eb;border-radius:2px;z-index:2;
-      box-shadow:0 0 2px rgba(0,0,0,.45);
+      width:5px;height:210px;background:linear-gradient(#e5e7eb,#9ca3af);
+      border-radius:3px; z-index:3; box-shadow:0 0 6px rgba(0,0,0,.35);
+      transition: transform .9s cubic-bezier(.2,.9,.2,1.05);
+    "></div>
+    <div style="
+      position:absolute;left:50%;bottom:0;transform:translate(-50%, 8px);
+      width:18px;height:18px;background:#e5e7eb;border-radius:50%;z-index:4;
+      box-shadow:0 0 8px rgba(0,0,0,.45);
     "></div>
 
-    <div style="
-      position:absolute;left:50%;bottom:0;transform:translate(-50%, 10px);
-      width:16px;height:16px;background:#e5e7eb;border-radius:50%;z-index:3;
-      box-shadow:0 0 2px rgba(0,0,0,.45);
-    "></div>
+    <!-- Labels -->
+    <div style="position:absolute;left:6%;bottom:48px;color:#9CA3AF;font-size:12px;">0%</div>
+    <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:8px;color:#9CA3AF;font-size:12px;">50%</div>
+    <div style="position:absolute;right:6%;bottom:48px;color:#9CA3AF;font-size:12px;">100%</div>
 
+    <div style="position:absolute;left:12%;bottom:115px;color:#16a34a;font-weight:700;">Low</div>
+    <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:160px;color:#f59e0b;font-weight:700;">Moderate</div>
+    <div style="position:absolute;right:12%;bottom:115px;color:#dc2626;font-weight:700;">High</div>
+
+    <!-- Readout -->
     <div style="
-      position:absolute;left:0;right:0;bottom:-6px;text-align:center;
-      color:#e5e7eb;font-size:44px;font-weight:700;">
-      {pct:.1f}%
+      position:absolute;left:0;right:0;bottom:84px;text-align:center;
+      color:#e5e7eb;font-size:48px;font-weight:800;letter-spacing:.5px;">
+      {pct:.1f}% <span style="font-size:34px;vertical-align:2px;">{emoji}</span>
+    </div>
+    <div style="
+      position:absolute;left:0;right:0;bottom:52px;text-align:center;
+      color:#cbd5e1;font-size:14px;letter-spacing:.4px;text-transform:uppercase;">
+      Risk: {label}
     </div>
   </div>
 </div>
 """
-    components.html(textwrap.dedent(html), height=300)
-
+    components.html(html, height=360)
+    
 def safe_predict(pipeline, X, has_preprocess: bool):
     """
     Prediksi aman anti-NaN:
@@ -308,11 +354,11 @@ if pipeline is None:
 
 st.sidebar.markdown(f"**Model:** `{model_label}`")
 HAS_PREPROCESS = pipeline_has_preprocess(pipeline)
-st.sidebar.caption(
-    "✅ Model mencakup preprocessing (ColumnTransformer)."
-    if HAS_PREPROCESS else
-    "ℹ️ Model TANPA preprocessing — app akan OHE Gender & susun fitur seperti saat training (X_enc)."
-)
+#st.sidebar.caption(
+#    "✅ Model mencakup preprocessing (ColumnTransformer)."
+#    if HAS_PREPROCESS else
+#    "ℹ️ Model TANPA preprocessing — app akan OHE Gender & susun fitur seperti saat training (X_enc)."
+#)
 
 menu = st.sidebar.radio("Pilih menu", ["Uji via File (CSV/XLSX)", "Uji via Form (Realtime)", "Model Inspector"])
 
@@ -408,23 +454,23 @@ if menu == "Uji via File (CSV/XLSX)":
     else:
         st.info("Silakan unggah file data.")
 
-# -------------------- Menu 2: Uji via Form --------------------
+# -------------------- Menu 2: Uji via Form (Realtime) --------------------
 elif menu == "Uji via Form (Realtime)":
     st.subheader("📝 Uji via Form (Realtime)")
 
     colA, colB = st.columns(2)
     with colA:
-        age = st.number_input("Age (tahun)", min_value=0, max_value=120, value=45, step=1)
-        total_bil = st.number_input("Total Bilirubin (mg/dL)", min_value=0.0, value=0.8, step=0.1)
+        age = st.number_input("Age (tahun)", min_value=0, max_value=90, value=65, step=1)
+        total_bil = st.number_input("Total Bilirubin (mg/dL)", min_value=0.0, value=0.7, step=0.1)
         direct_bil = st.number_input("Direct Bilirubin (mg/dL)", min_value=0.0, value=0.2, step=0.1)
-        alp = st.number_input("Alkaline Phosphotase (U/L)", min_value=0.0, value=110.0, step=1.0)
-        alt = st.number_input("SGPT / ALT (U/L)", min_value=0.0, value=30.0, step=1.0)
+        alp = st.number_input("Alkaline Phosphotase (U/L)", min_value=0.0, value=406.0, step=1.0)
+        alt = st.number_input("SGPT / ALT (U/L)", min_value=0.0, value=24.0, step=1.0)
     with colB:
         gender_id = st.selectbox("Gender", ["Male", "Female"])
-        ast = st.number_input("SGOT / AST (U/L)", min_value=0.0, value=28.0, step=1.0)
-        tprot = st.number_input("Total Proteins (g/dL)", min_value=0.0, value=7.0, step=0.1)
-        alb = st.number_input("Albumin (g/dL)", min_value=0.0, value=4.2, step=0.1)
-        agr = st.number_input("A/G Ratio", min_value=0.0, value=1.4, step=0.1)
+        ast = st.number_input("SGOT / AST (U/L)", min_value=0.0, value=45.0, step=1.0)
+        tprot = st.number_input("Total Proteins (g/dL)", min_value=0.0, value=7.2, step=0.1)
+        alb = st.number_input("Albumin (g/dL)", min_value=0.0, value=3.5, step=0.1)
+        agr = st.number_input("A/G Ratio", min_value=0.0, value=0.9, step=0.1)
 
     row = {
         "Age": age, "Gender": gender_id,
@@ -433,11 +479,13 @@ elif menu == "Uji via Form (Realtime)":
         "Total Proteins": tprot, "Albumin": alb, "A/G Ratio": agr,
     }
     one = pd.DataFrame([row])
+
     st.markdown("**Data yang akan diuji:**")
     st.dataframe(one, use_container_width=True)
 
     if st.button("🔮 Prediksi"):
         try:
+            # Siapkan X untuk pipeline
             if HAS_PREPROCESS:
                 X_form = impute_gender(one.copy())
                 # imputasi numerik ringan anti-NaN
@@ -447,14 +495,16 @@ elif menu == "Uji via Form (Realtime)":
             else:
                 X_form = build_X_enc_from_raw(one)
 
+            # Prediksi
             y_pred, prob = safe_predict(pipeline, X_form, HAS_PREPROCESS)
             pred = int(y_pred[0])
-            if prob is not None:
-                ppos = float(prob[0])
-            else:
-                # fallback prob dari decision_function sudah di safe_predict
-                ppos = 0.5
+            ppos = float(prob[0]) if prob is not None else 0.5
 
+            # Mapping hasil 0/1 -> Negative/Positive
+            is_positive = (pred == 1)
+            hasil_label = "✅ Positive (terindikasi penyakit liver)" if is_positive else "❎ Negative (tidak terindikasi penyakit liver)"
+
+            # Badge risiko + probabilitas
             level, color = risk_level(ppos)
             st.markdown(
                 f"""
@@ -462,8 +512,14 @@ elif menu == "Uji via Form (Realtime)":
                   <div class="badge" style="background:{color}">{level} risk</div>
                   <div style="opacity:.85">Probabilitas positif: <b>{ppos:.1%}</b></div>
                 </div>
-                """, unsafe_allow_html=True
+                """,
+                unsafe_allow_html=True
             )
+
+            # Tampilkan label hasil (Positive / Negative)
+            st.markdown(f"### Hasil Prediksi: {hasil_label}")
+
+            # Near boundary hint
             if near_boundary(ppos):
                 st.markdown(
                     """
@@ -474,12 +530,14 @@ elif menu == "Uji via Form (Realtime)":
                     """,
                     unsafe_allow_html=True
                 )
-            st.markdown("#### Visualisasi Risiko")
+
+            # Gauge
+            st.markdown("#### 🎯 Visualisasi Risiko")
             render_gauge_html(ppos)
 
         except Exception as e:
             st.error(f"Gagal memprediksi: {e}")
-
+            
 # -------------------- Menu 3: Model Inspector --------------------
 elif menu=="Model Inspector":
     st.subheader("🧩 Model Inspector")
