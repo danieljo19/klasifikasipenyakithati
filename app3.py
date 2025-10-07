@@ -771,3 +771,4 @@ elif menu == "Model Inspector":
             st.dataframe(loadings_full, use_container_width=True, height=420)
     else:
         st.info("Preprocess/PCA tidak tersedia atau belum dilatih, sehingga ringkasan PCA tidak bisa ditampilkan.")
+
