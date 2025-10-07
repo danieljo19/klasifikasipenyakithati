@@ -1,16 +1,16 @@
-# app.py — LPD Tester (SVM + PCA) — dengan Imputasi anti-NaN
-# =========================================================
+# app.py — LPD Tester (SVM + PCA) — Opsi-1 (kartu hasil pastel) + Imputasi anti-NaN
+# ==================================================================================
 # Fitur:
 # - Uji via File (CSV/XLSX) & Form (Realtime)
-# - Kompatibel dengan model:
-#    (a) punya 'preprocess' (ColumnTransformer) → terima raw (Age, Gender, ...)
+# - Kompatibel dengan pipeline:
+#    (a) punya 'preprocess' (ColumnTransformer) → bisa terima raw (Age, Gender, ...)
 #    (b) tanpa 'preprocess' → app bangun X_enc otomatis (impute + OHE Gender)
-# - Imputasi otomatis (median / most_frequent) bila input mengandung NaN
+# - Imputasi otomatis agar PCA/SVM tidak error NaN
 # - Model Inspector: explained variance, scree plot, heatmap loadings
-# - UI: gauge, metrics, confusion matrix, download hasil
-# =========================================================
+# - UI: kartu hasil (Opsi-1), gauge semicircle, metrics, confusion matrix, download hasil
+# ==================================================================================
 
-import os, io, base64, warnings, sys, textwrap, re
+import os, io, base64, warnings, sys, textwrap
 warnings.filterwarnings("ignore")
 
 import numpy as np
@@ -30,35 +30,66 @@ st.set_page_config(
     page_icon="🩺",
     layout="wide",
 )
+
+# -------------------- Pastel UI CSS --------------------
 st.markdown("""
 <style>
 .block-container {padding-top: 1.1rem; padding-bottom: 2rem;}
-.badge {display:inline-block;padding:.30rem .60rem;border-radius:999px;font-weight:700;color:#fff;}
-.badge-info{background:#0ea5e9;}
-.card{ background:#0f172a; border:1px solid #1f2937; border-radius:12px; padding:14px 16px; margin:10px 0; }
-.card h4{margin:.1rem 0 .4rem 0;}
-ul.clean{margin:.2rem 0 .2rem 1.25rem;}
-ul.clean li{margin:.25rem 0;}
-.legend {display:flex;gap:18px; align-items:center; flex-wrap:wrap; margin-top:.35rem;}
-.dot{display:inline-block;width:12px;height:12px;border-radius:999px;margin-right:6px;}
-.dot-green{background:#22c55e;}
-.dot-yellow{background:#fbbf24;}
-.dot-red{background:#ef4444;}
+
+/* Badge status (pastel) */
+.badge {
+  display:inline-flex; align-items:center; gap:.45rem;
+  padding:.32rem .70rem; border-radius:999px; font-weight:700;
+  border:1.5px solid transparent; letter-spacing:.1px;
+}
+.badge-low  { background:#dcfce7; color:#14532d; border-color:#86efac; }
+.badge-mod  { background:#fef9c3; color:#713f12; border-color:#fde68a; }
+.badge-high { background:#fee2e2; color:#7f1d1d; border-color:#fecaca; }
+.badge-info { background:#e0f2fe; color:#0c4a6e; border-color:#bae6fd; }
+
+/* Kartu hasil (border pastel + inner glow) */
+.card {
+  background: rgba(147, 197, 253, .06);
+  border: 2px solid #93c5fd;
+  border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: 0 0 0 3px rgba(147, 197, 253, .15) inset;
+  color: #e5e7eb;
+  margin:.25rem 0 1rem 0;
+}
+.section {
+  background: rgba(187, 247, 208, .06);
+  border: 2px solid #bbf7d0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 0 0 3px rgba(187, 247, 208, .12) inset;
+  color: #e5e7eb;
+}
+
+/* Teks hasil */
+.result-title { font-size: 1.6rem; line-height: 1.25; font-weight: 800; color: #e5e7eb; margin: .1rem 0 .6rem 0; }
+.result-sub   { color:#cbd5e1; font-size: .95rem; }
+.icon-pill {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:26px; height:26px; border-radius:6px; margin-right:.35rem;
+  background:#22c55e20; border:1.5px solid #86efac; color:#86efac;
+}
+
+/* Table header center */
 [data-testid="stTable"] th {text-align:center;}
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------- Schema (singkat, sesuai X_enc training) --------------------
+# -------------------- Schema (sesuai X_enc training) --------------------
 TARGET = "Result"
 NUMERIC_SHORT = [
     'Age', 'Total Bilirubin', 'Direct Bilirubin',
     'Alkaline Phosphotase', 'SGPT', 'SGOT',
     'Total Proteins', 'Albumin', 'A/G Ratio'
 ]
-CAT_SHORT = ['Gender']  # → OHE → Gender_Female, Gender_Male
 TRAIN_SCHEMA = NUMERIC_SHORT + ['Gender_Female', 'Gender_Male']
 
-# Normalisasi berbagai variasi ke schema singkat
+# Normalisasi berbagai variasi kolom → schema singkat
 NORMALIZE_TO_SHORT = {
     'Age of the patient': 'Age',
     'Gender of the patient': 'Gender',
@@ -68,20 +99,16 @@ NORMALIZE_TO_SHORT = {
     'Alkaline Phosphatase ': 'Alkaline Phosphotase',
     'Alkphos Alkaline Phosphatase': 'Alkaline Phosphotase',
     'Alkphos Alkaline Phosphatase\xa0': 'Alkaline Phosphotase',
-    'SGPT': 'SGPT',
-    'Sgpt Alamine Aminotransferase': 'SGPT',
-    'SGOT': 'SGOT',
-    'Sgot Aspartate Aminotransferase': 'SGOT',
-    'Total Proteins': 'Total Proteins',
-    'Total Prot': 'Total Proteins',
-    'Albumin': 'Albumin',
-    'Albi Albumin': 'Albumin',
+    'SGPT': 'SGPT', 'Sgpt Alamine Aminotransferase': 'SGPT',
+    'SGOT': 'SGOT', 'Sgot Aspartate Aminotransferase': 'SGOT',
+    'Total Proteins': 'Total Proteins', 'Total Prot': 'Total Proteins',
+    'Albumin': 'Albumin', 'Albi Albumin': 'Albumin',
     'A/G Ratio': 'A/G Ratio',
     'A/G Ratio Albumin and Globulin Ratio': 'A/G Ratio',
     'Result': 'Result'
 }
 
-# -------------------- Utils umum --------------------
+# -------------------- Utils --------------------
 def normalize_to_short_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=lambda c: NORMALIZE_TO_SHORT.get(c, c))
 
@@ -126,7 +153,7 @@ def impute_numeric_median(df: pd.DataFrame, cols: list) -> pd.DataFrame:
     return out
 
 def impute_gender(df: pd.DataFrame) -> pd.DataFrame:
-    """Isi Gender kosong → 'Male', dan buat OHE kolom jika perlu."""
+    """Isi Gender kosong → 'Male' dan normalisasi label."""
     out = df.copy()
     if 'Gender' in out.columns:
         g = out['Gender'].astype(str).str.strip().str.lower()
@@ -139,24 +166,19 @@ def build_X_enc_from_raw(df_raw: pd.DataFrame) -> pd.DataFrame:
     """Bangun X_enc (impute median + OHE Gender) dan urutkan sesuai TRAIN_SCHEMA."""
     df = normalize_to_short_cols(df_raw.copy())
     df = impute_gender(df)
-    # pastikan semua kolom numerik ada & numerik
     for c in NUMERIC_SHORT:
-        if c not in df.columns:
-            df[c] = np.nan
+        if c not in df.columns: df[c] = np.nan
         df[c] = pd.to_numeric(df[c], errors='coerce')
     df = impute_numeric_median(df, NUMERIC_SHORT)
     df['Age'] = np.floor(df['Age']).astype(int)
 
-    # OHE Gender sederhana
     g = df['Gender'] if 'Gender' in df.columns else pd.Series(['Male']*len(df))
     df['Gender_Female'] = (g == 'Female').astype(int)
     df['Gender_Male']   = (g == 'Male').astype(int)
 
-    # susun TRAIN_SCHEMA + fallback kolom kosong
     for c in TRAIN_SCHEMA:
         if c not in df.columns: df[c] = 0
     X_enc = df[TRAIN_SCHEMA].copy()
-    # jaga-jaga jika ada NaN tersisa di numerik (impute lagi)
     X_enc = impute_numeric_median(X_enc, TRAIN_SCHEMA)
     return X_enc
 
@@ -168,44 +190,34 @@ def risk_level(prob):
 def near_boundary(prob, window=0.05):
     return abs(prob - 0.5) <= window
 
+# --- Gauge visual ---
 def render_gauge_html(prob: float):
-    """
-    Semicircle gauge yang lebih menarik:
-    - Zona warna (low/medium/high) dengan gradasi lembut
-    - Tick marks & label 0% • 50% • 100% + teks Low/Moderate/High
-    - Jarum animasi halus
-    - Nilai besar + emoji status
-    """
     pct = max(0.0, min(prob*100.0, 100.0))
     angle = -90 + (pct * 1.8)  # 0..100% -> -90..+90
-
-    # label & emoji
     if prob < 0.33:
-        label = "Low";    emoji = "🟢"
+        label, emoji = "Low", "🟢"
     elif prob < 0.66:
-        label = "Moderate"; emoji = "🟡"
+        label, emoji = "Moderate", "🟡"
     else:
-        label = "High";   emoji = "🔴"
+        label, emoji = "High", "🔴"
 
     html = f"""
 <div style="width:100%;display:flex;justify-content:center;margin-top:.5rem;">
   <div style="position:relative;width:620px;height:340px;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto;">
-    <!-- Arc background with gradient zones -->
     <div style="
       position:absolute;left:0;bottom:0;width:100%;height:100%;
       border-top-left-radius:620px;border-top-right-radius:620px;
       background:
         conic-gradient(from 180deg,
-          #DCFCE7 0deg 110deg,     /* green */
-          #FEF3C7 110deg 230deg,   /* yellow */
-          #FEE2E2 230deg 360deg    /* red */
+          #DCFCE7 0deg 110deg,
+          #FEF3C7 110deg 230deg,
+          #FEE2E2 230deg 360deg
         );
       -webkit-mask: radial-gradient(circle at 50% 100%, transparent 225px, #000 226px);
               mask: radial-gradient(circle at 50% 100%, transparent 225px, #000 226px);
       box-shadow: inset 0 12px 24px rgba(0,0,0,.18);
     "></div>
 
-    <!-- Tick marks -->
     <div style="position:absolute;left:0;bottom:0;width:100%;height:100%;
                 -webkit-mask: radial-gradient(circle at 50% 100%, transparent 214px, #000 215px);
                         mask: radial-gradient(circle at 50% 100%, transparent 214px, #000 215px);">
@@ -217,10 +229,9 @@ def render_gauge_html(prob: float):
       ])}
     </div>
 
-    <!-- Needle -->
     <div style="
       position:absolute;left:50%;bottom:0;transform-origin:50% 100%;
-      transform: translateX(-50%) rotate({angle}deg);
+      transform: translateX(-50%) rotate(""" + f"{angle}" + """deg);
       width:5px;height:210px;background:linear-gradient(#e5e7eb,#9ca3af);
       border-radius:3px; z-index:3; box-shadow:0 0 6px rgba(0,0,0,.35);
       transition: transform .9s cubic-bezier(.2,.9,.2,1.05);
@@ -231,7 +242,6 @@ def render_gauge_html(prob: float):
       box-shadow:0 0 8px rgba(0,0,0,.45);
     "></div>
 
-    <!-- Labels -->
     <div style="position:absolute;left:6%;bottom:48px;color:#9CA3AF;font-size:12px;">0%</div>
     <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:8px;color:#9CA3AF;font-size:12px;">50%</div>
     <div style="position:absolute;right:6%;bottom:48px;color:#9CA3AF;font-size:12px;">100%</div>
@@ -240,32 +250,56 @@ def render_gauge_html(prob: float):
     <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:160px;color:#f59e0b;font-weight:700;">Moderate</div>
     <div style="position:absolute;right:12%;bottom:115px;color:#dc2626;font-weight:700;">High</div>
 
-    <!-- Readout -->
     <div style="
       position:absolute;left:0;right:0;bottom:84px;text-align:center;
       color:#e5e7eb;font-size:48px;font-weight:800;letter-spacing:.5px;">
-      {pct:.1f}% <span style="font-size:34px;vertical-align:2px;">{emoji}</span>
+      """ + f"{pct:.1f}" + """% <span style="font-size:34px;vertical-align:2px;">""" + f"{emoji}" + """</span>
     </div>
     <div style="
       position:absolute;left:0;right:0;bottom:52px;text-align:center;
       color:#cbd5e1;font-size:14px;letter-spacing:.4px;text-transform:uppercase;">
-      Risk: {label}
+      Risk: """ + f"{label}" + """
     </div>
   </div>
 </div>
 """
     components.html(html, height=360)
-    
+
+# --- Kartu hasil Opsi-1 (pastel) ---
+def render_output_option1(pred: int, ppos: float):
+    is_positive = (pred == 1)
+    prob_pct = f"{ppos*100:.1f}%"
+
+    # badge risiko
+    if ppos < 0.33:
+        risk_html = '<span class="badge badge-low">Low risk</span>'
+    elif ppos < 0.66:
+        risk_html = '<span class="badge badge-mod">Moderate risk</span>'
+    else:
+        risk_html = '<span class="badge badge-high">High risk</span>'
+
+    # label positif/negatif
+    label_html = (
+        '<span class="icon-pill">✅</span> Positive (terindikasi penyakit liver)'
+        if is_positive else
+        '<span class="icon-pill" style="background:#60a5fa20;border-color:#93c5fd;color:#93c5fd;">✖</span> '
+        'Negative (tidak terindikasi penyakit liver)'
+    )
+
+    html = f"""
+<div class="card">
+  <div class="result-title">Hasil Prediksi: {label_html}</div>
+  <div class="result-sub" style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;">
+    {risk_html}
+    <span>Probabilitas positif: <b style="color:#e5e7eb">{prob_pct}</b></span>
+    <span style="opacity:.8">• Ambang keputusan = 50%</span>
+  </div>
+</div>
+"""
+    st.markdown(html, unsafe_allow_html=True)
+
+# --- Prediksi aman (imputasi kalau ketemu NaN) ---
 def safe_predict(pipeline, X, has_preprocess: bool):
-    """
-    Prediksi aman anti-NaN:
-      1) coba prediksi langsung
-      2) jika gagal NaN:
-         - jika TANPA preprocess → imputasi median semua kolom (sudah ditangani dalam builder),
-           tapi jaga-jaga lakukan lagi di sini
-         - jika DENGAN preprocess → imputasi median utk kolom numerik yang ada
-      3) jika masih gagal → drop baris yang masih ada NaN
-    """
     def _try_infer(_X):
         try:
             yp = pipeline.predict(_X)
@@ -273,7 +307,6 @@ def safe_predict(pipeline, X, has_preprocess: bool):
             try:
                 pp = pipeline.predict_proba(_X)[:,1]
             except Exception:
-                # fallback prob dari decision_function → sigmoid approx
                 try:
                     dv = pipeline.decision_function(_X)
                     pp = 1/(1+np.exp(-dv))
@@ -287,33 +320,24 @@ def safe_predict(pipeline, X, has_preprocess: bool):
     if err is None:
         return y_pred, p_pos
 
+    # jika error terkait NaN → imputasi, lalu coba lagi
     msg = str(err).lower()
     if "nan" in msg or "contains nan" in msg:
         X2 = X.copy()
         if has_preprocess:
-            # imputasi median untuk semua kolom numerik yang terdeteksi
-            num_cols = []
-            for c in X2.columns:
-                # heuristik: treat numeric-like columns as numeric
-                if pd.api.types.is_numeric_dtype(X2[c]):
-                    num_cols.append(c)
+            num_cols = [c for c in X2.columns if pd.api.types.is_numeric_dtype(X2[c])]
             if num_cols:
                 X2 = impute_numeric_median(X2, num_cols)
         else:
-            # TANPA preprocess: kita anggap X sudah skema TRAIN_SCHEMA → impute semua numerik
             X2 = impute_numeric_median(X2, X2.columns.tolist())
         y_pred, p_pos, err2 = _try_infer(X2)
         if err2 is None:
             return y_pred, p_pos
-
-        # terakhir: drop baris yang masih ada NaN
         X3 = X2.dropna()
         y_pred, p_pos, err3 = _try_infer(X3)
         if err3 is None:
-            # kembalikan hasil untuk subset baris. Caller harus hati-hati
             return y_pred, p_pos
 
-    # kalau error lain, lemparkan
     raise err
 
 # -------------------- Sidebar: Model Loader --------------------
@@ -339,7 +363,7 @@ if uploaded_pkl is not None:
         st.sidebar.error(f"Gagal memuat model: {e}")
 
 if pipeline is None:
-    default_path = "svm_pca_rbf_new.pkl"  # ganti jika nama file beda
+    default_path = "svm_pca_rbf_new.pkl"  # ubah jika nama file berbeda
     if os.path.exists(default_path):
         try:
             with open(default_path, "rb") as f:
@@ -354,11 +378,6 @@ if pipeline is None:
 
 st.sidebar.markdown(f"**Model:** `{model_label}`")
 HAS_PREPROCESS = pipeline_has_preprocess(pipeline)
-#st.sidebar.caption(
-#    "✅ Model mencakup preprocessing (ColumnTransformer)."
-#    if HAS_PREPROCESS else
-#    "ℹ️ Model TANPA preprocessing — app akan OHE Gender & susun fitur seperti saat training (X_enc)."
-#)
 
 menu = st.sidebar.radio("Pilih menu", ["Uji via File (CSV/XLSX)", "Uji via Form (Realtime)", "Model Inspector"])
 
@@ -373,7 +392,6 @@ if menu == "Uji via File (CSV/XLSX)":
             df = load_any(up_data)
             df = normalize_to_short_cols(df)
 
-            # Perbaiki target 1/2 → 1/0 (opsional)
             if 'Result' in df.columns:
                 uniq = set(pd.Series(df['Result']).dropna().unique().tolist())
                 if uniq == {1, 2}:
@@ -384,26 +402,22 @@ if menu == "Uji via File (CSV/XLSX)":
 
             # Siapkan X untuk model
             if HAS_PREPROCESS:
-                # model menerima raw → lakukan imputasi ringan agar tidak ada NaN numerik
                 X = df.drop(columns=['Result']) if 'Result' in df.columns else df.copy()
-                # imputasi numerik ringan
                 num_like = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
                 if num_like:
                     X = impute_numeric_median(X, num_like)
-                # imputasi gender (most frequent) agar tidak kosong
                 X = impute_gender(X)
             else:
-                # Jika sudah OHE → tata TRAIN_SCHEMA, atau bangun dari raw
                 if set(['Gender_Female','Gender_Male']).issubset(df.columns):
                     X = df.drop(columns=['Result']) if 'Result' in df.columns else df.copy()
                     for c in TRAIN_SCHEMA:
                         if c not in X.columns: X[c] = 0
                     X = X[TRAIN_SCHEMA]
-                    X = impute_numeric_median(X, TRAIN_SCHEMA)  # jaga-jaga
+                    X = impute_numeric_median(X, TRAIN_SCHEMA)
                 else:
                     X = build_X_enc_from_raw(df.drop(columns=['Result']) if 'Result' in df.columns else df)
 
-            # Prediksi aman anti-NaN
+            # Prediksi
             y_pred, prob = safe_predict(pipeline, X, HAS_PREPROCESS)
             out = df.copy()
             out['Pred'] = y_pred
@@ -460,17 +474,17 @@ elif menu == "Uji via Form (Realtime)":
 
     colA, colB = st.columns(2)
     with colA:
-        age = st.number_input("Age (tahun)", min_value=0, max_value=90, value=65, step=1)
-        total_bil = st.number_input("Total Bilirubin (mg/dL)", min_value=0.0, value=0.7, step=0.1)
+        age = st.number_input("Age (tahun)", min_value=0, max_value=120, value=45, step=1)
+        total_bil = st.number_input("Total Bilirubin (mg/dL)", min_value=0.0, value=0.8, step=0.1)
         direct_bil = st.number_input("Direct Bilirubin (mg/dL)", min_value=0.0, value=0.2, step=0.1)
-        alp = st.number_input("Alkaline Phosphotase (U/L)", min_value=0.0, value=406.0, step=1.0)
-        alt = st.number_input("SGPT / ALT (U/L)", min_value=0.0, value=24.0, step=1.0)
+        alp = st.number_input("Alkaline Phosphotase (U/L)", min_value=0.0, value=110.0, step=1.0)
+        alt = st.number_input("SGPT / ALT (U/L)", min_value=0.0, value=30.0, step=1.0)
     with colB:
         gender_id = st.selectbox("Gender", ["Male", "Female"])
-        ast = st.number_input("SGOT / AST (U/L)", min_value=0.0, value=45.0, step=1.0)
-        tprot = st.number_input("Total Proteins (g/dL)", min_value=0.0, value=7.2, step=0.1)
-        alb = st.number_input("Albumin (g/dL)", min_value=0.0, value=3.5, step=0.1)
-        agr = st.number_input("A/G Ratio", min_value=0.0, value=0.9, step=0.1)
+        ast = st.number_input("SGOT / AST (U/L)", min_value=0.0, value=28.0, step=1.0)
+        tprot = st.number_input("Total Proteins (g/dL)", min_value=0.0, value=7.0, step=0.1)
+        alb = st.number_input("Albumin (g/dL)", min_value=0.0, value=4.2, step=0.1)
+        agr = st.number_input("A/G Ratio", min_value=0.0, value=1.4, step=0.1)
 
     row = {
         "Age": age, "Gender": gender_id,
@@ -479,55 +493,32 @@ elif menu == "Uji via Form (Realtime)":
         "Total Proteins": tprot, "Albumin": alb, "A/G Ratio": agr,
     }
     one = pd.DataFrame([row])
-
     st.markdown("**Data yang akan diuji:**")
     st.dataframe(one, use_container_width=True)
 
     if st.button("🔮 Prediksi"):
         try:
-            # Siapkan X untuk pipeline
             if HAS_PREPROCESS:
                 X_form = impute_gender(one.copy())
-                # imputasi numerik ringan anti-NaN
                 num_like = [c for c in X_form.columns if pd.api.types.is_numeric_dtype(X_form[c])]
-                if num_like:
-                    X_form = impute_numeric_median(X_form, num_like)
+                if num_like: X_form = impute_numeric_median(X_form, num_like)
             else:
                 X_form = build_X_enc_from_raw(one)
 
-            # Prediksi
             y_pred, prob = safe_predict(pipeline, X_form, HAS_PREPROCESS)
             pred = int(y_pred[0])
             ppos = float(prob[0]) if prob is not None else 0.5
 
-            # Mapping hasil 0/1 -> Negative/Positive
-            is_positive = (pred == 1)
-            hasil_label = "✅ Positive (terindikasi penyakit liver)" if is_positive else "❎ Negative (tidak terindikasi penyakit liver)"
-
-            # Badge risiko + probabilitas
-            level, color = risk_level(ppos)
-            st.markdown(
-                f"""
-                <div style="display:flex;gap:12px;align-items:center;margin:.4rem 0;">
-                  <div class="badge" style="background:{color}">{level} risk</div>
-                  <div style="opacity:.85">Probabilitas positif: <b>{ppos:.1%}</b></div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-            # Tampilkan label hasil (Positive / Negative)
-            st.markdown(f"### Hasil Prediksi: {hasil_label}")
+            # === KARTU HASIL OPSI-1 ===
+            render_output_option1(pred, ppos)
 
             # Near boundary hint
             if near_boundary(ppos):
                 st.markdown(
-                    """
-                    <div class="badge badge-info">Near decision boundary</div>
-                    <div style="opacity:.8;margin-top:.25rem;">
-                        Probabilitas mendekati 50% → prediksi mudah berubah bila ada sedikit perubahan nilai.
-                    </div>
-                    """,
+                    '<div class="badge badge-info">Near decision boundary</div>'
+                    '<div style="opacity:.85;margin-top:.25rem;">'
+                    'Probabilitas mendekati 50% → hasil bisa berubah dengan sedikit perubahan nilai.'
+                    '</div>',
                     unsafe_allow_html=True
                 )
 
@@ -537,41 +528,41 @@ elif menu == "Uji via Form (Realtime)":
 
         except Exception as e:
             st.error(f"Gagal memprediksi: {e}")
-            
+
 # -------------------- Menu 3: Model Inspector --------------------
 elif menu=="Model Inspector":
     st.subheader("🧩 Model Inspector")
-    pca=pipeline.named_steps.get("pca",None)
+    pca = pipeline.named_steps.get("pca", None)
     if pca and hasattr(pca,"explained_variance_ratio_"):
-        evr=pca.explained_variance_ratio_; cum=np.cumsum(evr)
-        df_pca=pd.DataFrame({"PC":[f"PC{i+1}" for i in range(len(evr))],
-                             "ExplainedVar":evr,"Cumulative":cum})
-        # Tambah Top 3 Fitur PC
-        if hasattr(pca,"components_"):
-            loadings=pca.components_
-            feat_names=TRAIN_SCHEMA
-            top3=[]
-            for pc in loadings:
-                idx=np.argsort(np.abs(pc))[::-1][:3]
-                top3.append(", ".join([feat_names[j] for j in idx]))
-            df_pca["Top Fitur PC"]=top3
-        st.dataframe(df_pca,use_container_width=True)
+        evr = pca.explained_variance_ratio_
+        cum = np.cumsum(evr)
+        df_pca = pd.DataFrame({
+            "PC":[f"PC{i+1}" for i in range(len(evr))],
+            "ExplainedVar":evr,
+            "Cumulative":cum
+        })
+        st.dataframe(df_pca, use_container_width=True)
 
         # Scree plot
         fig1, ax1 = plt.subplots()
         ax1.plot(range(1,len(evr)+1),evr,marker='o',label='Explained Var Ratio')
         ax1.plot(range(1,len(cum)+1),cum,marker='s',linestyle='--',label='Cumulative')
-        ax1.legend(); st.pyplot(fig1)
+        ax1.set_xlabel("PC")
+        ax1.set_ylabel("Proporsi Varians")
+        ax1.legend()
+        st.pyplot(fig1)
 
-        # Heatmap
+        # Heatmap loadings bila tersedia
         if hasattr(pca,"components_"):
-            loadings=pca.components_.T
+            # Gunakan TRAIN_SCHEMA untuk nama fitur (pipeline tanpa preprocess)
+            loadings = pca.components_.T
             fig2, ax2 = plt.subplots()
-            im=ax2.imshow(loadings,aspect='auto')
+            im = ax2.imshow(loadings, aspect='auto')
             ax2.set_xticks(range(loadings.shape[1]))
             ax2.set_xticklabels([f"PC{i+1}" for i in range(loadings.shape[1])])
             ax2.set_yticks(range(len(TRAIN_SCHEMA)))
             ax2.set_yticklabels(TRAIN_SCHEMA)
+            ax2.set_title("PCA Loadings")
             fig2.colorbar(im, ax=ax2)
             st.pyplot(fig2)
     else:
